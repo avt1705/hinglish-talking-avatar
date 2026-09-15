@@ -9,8 +9,11 @@ import base64
 import torch
 from diffusers import StableDiffusionPipeline
 
-# --- Always use GPU ---
-pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5").to("cuda")
+print("Handler starting... GPU available:", torch.cuda.is_available())
+
+# --- Load Stable Diffusion model ---
+device = "cuda" if torch.cuda.is_available() else "cpu"
+pipe = StableDiffusionPipeline.from_pretrained("/models/sd15").to(device)
 
 def generate_character_image(prompt, save_path):
     image = pipe(prompt).images[0]
