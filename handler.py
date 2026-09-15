@@ -6,6 +6,16 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import os
 import base64
+import torch
+from diffusers import StableDiffusionPipeline
+
+# --- Always use GPU ---
+pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5").to("cuda")
+
+def generate_character_image(prompt, save_path):
+    image = pipe(prompt).images[0]
+    image.save(save_path)
+    return save_path
 
 def make_text_clip(text, duration, start):
     img = Image.new("RGB", (1280, 200), color="black")
@@ -15,13 +25,9 @@ def make_text_clip(text, duration, start):
     frame = np.array(img)
     return mpy.ImageClip(frame).set_duration(duration).set_start(start).set_position(("center", "bottom"))
 
-def make_character_clip(duration, start):
-    # Simple placeholder character: colored square
-    img = Image.new("RGB", (300, 300), color="blue")
-    draw = ImageDraw.Draw(img)
-    font = ImageFont.truetype("DejaVuSans-Bold.ttf", 60)
-    draw.text((50, 100), "🙂", font=font, fill="white")
-    frame = np.array(img)
+def make_character_clip(image_path, duration, start):
+    char_img = Image.open(image_path).resize((400, 400))
+    frame = np.array(char_img)
     return mpy.ImageClip(frame).set_duration(duration).set_start(start).set_position(("center", "center"))
 
 def handler(event):
@@ -51,7 +57,11 @@ def handler(event):
     total_duration = audio.duration_seconds
     clip = mpy.ColorClip(size=(1280, 720), color=(0, 0, 0)).set_duration(total_duration).set_fps(24)
 
-    # --- Step 4: Map script lines to audio chunks ---
+    # --- Step 4: Generate character image once ---
+    char_path = os.path.join(workspace, "character.png")
+    generate_character_image("cartoon character explaining Hindi subtitles", char_path)
+
+    # --- Step 5: Map script lines to audio chunks ---
     import re
     lines = re.split(r'[।.!?\n]', script)
     lines = [line.strip() for line in lines if line.strip()]
@@ -61,18 +71,18 @@ def handler(event):
     for i, chunk in enumerate(chunks):
         line = lines[i] if i < len(lines) else ""
         txt_clip = make_text_clip(line, chunk.duration_seconds, current_time)
-        char_clip = make_character_clip(chunk.duration_seconds, current_time)
+        char_clip = make_character_clip(char_path, chunk.duration_seconds, current_time)
         overlays.extend([txt_clip, char_clip])
         current_time += chunk.duration_seconds
 
-    # --- Step 5: Combine video + subtitles + characters + audio ---
+    # --- Step 6: Combine video + subtitles + character + audio ---
     final = mpy.CompositeVideoClip([clip, *overlays])
     final = final.set_audio(mpy.AudioFileClip(audio_path))
 
     output_path = os.path.join(workspace, "final_video.mp4")
     final.write_videofile(output_path, fps=24)
 
-    # --- Step 6: Encode video as base64 ---
+    # --- Step 7: Encode video as base64 ---
     with open(output_path, "rb") as f:
         encoded_video = base64.b64encode(f.read()).decode("utf-8")
 
