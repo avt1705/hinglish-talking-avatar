@@ -12,4 +12,3 @@ gTTS==2.5.1
 pydub==0.25.1
 numpy==1.24.4
 scipy==1.11.3
-manim==0.18.1   # optional, for advanced animated characters
