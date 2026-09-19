@@ -5,31 +5,24 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install system dependencies, FFmpeg, and graphic rendering libraries
+# Install only the essential system packages (ffmpeg for video/audio, curl for font download)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    libsm6 \
-    libxext6 \
     curl \
     ca-certificates \
-    fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
-# Download Google's Noto Sans Devanagari font for Hindi rendering
+# Download Google's Noto Sans Devanagari font directly into /app
 RUN curl -L -o /app/NotoSansDevanagari.ttf "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari-Bold.ttf"
 
-# Upgrade pip and wheel ONLY. Do NOT upgrade setuptools here. 
-RUN python3 -m pip install --upgrade pip wheel
+# Pin setuptools below version 70 to prevent gTTS crashes
+RUN python3 -m pip install --upgrade pip "setuptools<70.0.0" wheel
 
-# Install dependencies (this will install the safe, pinned version of setuptools)
+# Install dependencies first for layer caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy your transparent custom character sprites
-COPY my_scene1.png /app/my_scene1.png
-COPY my_scene2.png /app/my_scene2.png
-COPY my_scene3.png /app/my_scene3.png
-
-COPY handler.py .
+# Copy all repository files (frame1-4.png, handler.py, etc.) into /app
+COPY . /app/
 
 CMD ["python3", "-u", "handler.py"]
