@@ -1,226 +1,125 @@
 import os
-import re
 import base64
 import textwrap
 import traceback
-import subprocess
 import numpy as np
 import PIL.Image
 from PIL import Image, ImageDraw, ImageFont
 
-# -------------------------------------------------------------
-# Compatibility Patch: Fixes MoviePy 1.0.3 with Pillow 10+
-# -------------------------------------------------------------
 if not hasattr(PIL.Image, "ANTIALIAS"):
     PIL.Image.ANTIALIAS = PIL.Image.Resampling.LANCZOS
 
 import runpod
 import moviepy.editor as mpy
 from pydub import AudioSegment, silence
-from elevenlabs.client import ElevenLabs
-from elevenlabs import save as el_save
 
 FONT_PATH = "/app/NotoSansDevanagari.ttf"
-
 
 def log(*args):
     print(*args, flush=True)
 
-
-# ==========================================
-# 1. AUDIO GENERATION & ANALYSIS
-# ==========================================
-def generate_audio(script: str, output_path: str, api_key: str = None):
-    if api_key:
-        try:
-            log("Attempting ElevenLabs TTS generation...")
-            client = ElevenLabs(api_key=api_key)
-            audio = client.generate(
-                text=script, voice="Rachel", model="eleven_multilingual_v2"
-            )
-            el_save(audio, output_path)
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                log("ElevenLabs audio generated successfully.")
-                return
-        except Exception as e:
-            log(f"ElevenLabs failed: {e}. Falling back to Edge TTS.")
-
-    log("Running Edge TTS generation via CLI...")
-    cmd = [
-        "edge-tts",
-        "--text",
-        script,
-        "--voice",
-        "hi-IN-MadhurNeural",
-        "--write-media",
-        output_path,
-    ]
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-            log("Edge TTS audio successfully saved.")
-            return
-    except subprocess.CalledProcessError:
-        log("Edge TTS Failed. Falling back to basic gTTS...")
-
-    from gtts import gTTS
-
-    tts = gTTS(text=script, lang="hi", slow=False)
-    tts.save(output_path)
-    log("Fallback gTTS audio saved.")
-
-
 def get_speaking_intervals(audio_path: str):
     audio = AudioSegment.from_file(audio_path)
-    nonsilent_ranges = silence.detect_nonsilent(
-        audio, min_silence_len=150, silence_thresh=-40
-    )
-    return [
-        (start / 1000.0, end / 1000.0) for start, end in nonsilent_ranges
-    ], audio.duration_seconds
+    nonsilent = silence.detect_nonsilent(audio, min_silence_len=150, silence_thresh=-40)
+    return [(s / 1000.0, e / 1000.0) for s, e in nonsilent], audio.duration_seconds
 
-
-# ==========================================
-# 2. SUBTITLE GENERATION
-# ==========================================
-def create_subtitle_file(text: str, filepath: str, width=1280, height=720):
+def create_subtitle_file(text: str, filepath: str, width=980, height=1920):
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     try:
-        font = ImageFont.truetype(FONT_PATH, 55)
+        font = ImageFont.truetype(FONT_PATH, 65)
     except Exception:
         font = ImageFont.load_default()
 
-    wrapped_text = "\n".join(textwrap.wrap(text, width=38))
-    bbox = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=10)
+    wrapped_text = "\n".join(textwrap.wrap(text, width=28))
+    bbox = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=15)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
     pos_x = (width - text_w) // 2
-    pos_y = height - text_h - 60
+    pos_y = height - text_h - 300 
 
     draw.multiline_text(
-        (pos_x, pos_y),
-        wrapped_text,
-        font=font,
-        fill=(255, 223, 0),
-        stroke_width=6,
-        stroke_fill=(0, 0, 0),
-        align="center",
-        spacing=10,
+        (pos_x, pos_y), wrapped_text, font=font, fill=(255, 223, 0),
+        stroke_width=8, stroke_fill=(0, 0, 0), align="center", spacing=15
     )
     img.save(filepath)
 
-
-# ==========================================
-# 3. RUNPOD HANDLER
-# ==========================================
 def handler(event):
     try:
         input_data = event.get("input", {})
         script = input_data.get("script", "").strip()
-        elevenlabs_key = input_data.get("elevenlabs_key", "")
+        audio_base64 = input_data.get("audio_base64", "").strip()
 
-        if not script:
-            return {"error": "Missing 'script' input."}
+        if not script or not audio_base64:
+            return {"error": "Missing 'script' or 'audio_base64' in input."}
 
         workdir = "/tmp/runpod_job"
         os.makedirs(workdir, exist_ok=True)
         audio_path = os.path.join(workdir, "speech.mp3")
         final_video_path = os.path.join(workdir, "final.mp4")
 
-        log("Generating Audio...")
-        generate_audio(script, audio_path, elevenlabs_key)
-        speaking_intervals, total_duration = get_speaking_intervals(audio_path)
+        # Decode the audio sent by the local frontend
+        with open(audio_path, "wb") as f:
+            f.write(base64.b64decode(audio_base64))
 
-        # Pre-resize character sprites cleanly with Pillow (Height: 600px)
-        def load_and_scale(path, target_h=600):
-            im = Image.open(path).convert("RGBA")
-            aspect = im.width / im.height
-            target_w = int(target_h * aspect)
-            return im.resize((target_w, target_h), Image.Resampling.LANCZOS)
+        speaking_intervals, total_dur = get_speaking_intervals(audio_path)
 
-        temp_idle = os.path.join(workdir, "scaled_idle.png")
-        temp_talk1 = os.path.join(workdir, "scaled_talk1.png")
-        temp_talk2 = os.path.join(workdir, "scaled_talk2.png")
+        frame_paths = [
+            "/app/frame1.png",
+            "/app/frame2.png",
+            "/app/frame3.png",
+            "/app/frame4.png"
+        ]
 
-        load_and_scale("/app/my_scene1.png").save(temp_idle)
-        load_and_scale("/app/my_scene2.png").save(temp_talk1)
-        load_and_scale("/app/my_scene3.png").save(temp_talk2)
+        for fp in frame_paths:
+            if not os.path.exists(fp):
+                return {"error": f"Missing frame asset: {fp}"}
 
-        idle_clip = mpy.ImageClip(temp_idle)
-        talk1_clip = mpy.ImageClip(temp_talk1)
-        talk2_clip = mpy.ImageClip(temp_talk2)
-
-        char_w, char_h = idle_clip.size
-        pos_x = (1280 - char_w) // 2
-        pos_y = 720 - char_h
-
-        def get_mask_frame(clip):
-            if clip.mask is not None:
-                return clip.mask.get_frame(0)
-            return np.ones((clip.h, clip.w))
+        clips = [mpy.ImageClip(f).resize(width=1080) for f in frame_paths]
+        idle_clip = clips[0]
+        talk_clips = clips[1:]
 
         def make_frame(t):
             is_speaking = any(start <= t <= end for start, end in speaking_intervals)
             if is_speaking:
-                active_clip = talk1_clip if int(t / 0.15) % 2 == 0 else talk2_clip
-                return active_clip.get_frame(0)
+                # Changes hand gesture every 3 seconds
+                gesture_idx = int(t / 3.0) % len(talk_clips)
+                return talk_clips[gesture_idx].get_frame(0)
             return idle_clip.get_frame(0)
 
-        def make_mask(t):
-            is_speaking = any(start <= t <= end for start, end in speaking_intervals)
-            if is_speaking:
-                active_clip = talk1_clip if int(t / 0.15) % 2 == 0 else talk2_clip
-                return get_mask_frame(active_clip)
-            return get_mask_frame(idle_clip)
+        char_h = idle_clip.h
+        base_y = (1920 - char_h) // 2
+        char_clip = mpy.VideoClip(make_frame, duration=total_dur).set_position(("center", base_y))
+        bg_clip = mpy.ColorClip(size=(1080, 1920), color=(18, 18, 24)).set_duration(total_dur)
 
-        # MoviePy 1.0.3 uses 'ismask'
-        char_clip = mpy.VideoClip(make_frame, duration=total_duration)
-        mask_clip = mpy.VideoClip(make_mask, duration=total_duration, ismask=True)
-        char_clip = char_clip.set_mask(mask_clip).set_position((pos_x, pos_y))
-
-        # Background Layer
-        bg_clip = mpy.ColorClip(size=(1280, 720), color=(18, 18, 24)).set_duration(
-            total_duration
-        )
-
-        # Subtitles
-        sentences = [p.strip() for p in re.split(r"[।.!?\n]+", script) if p.strip()]
-        audio_segment = AudioSegment.from_file(audio_path)
-        chunks = silence.split_on_silence(
-            audio_segment, min_silence_len=300, silence_thresh=-40, keep_silence=150
-        )
-        if not chunks:
-            chunks = [audio_segment]
-
+        words = script.split()
         text_clips = []
         current_time = 0.0
-        for idx, chunk in enumerate(chunks):
-            duration = chunk.duration_seconds
-            text = sentences[idx] if idx < len(sentences) else ""
-            if text:
-                sub_path = os.path.join(workdir, f"sub_{idx}.png")
-                create_subtitle_file(text, sub_path)
-                txt_clip = (
-                    mpy.ImageClip(sub_path)
-                    .set_duration(duration)
-                    .set_start(current_time)
-                )
-                text_clips.append(txt_clip)
-            current_time += duration
+        for i in range(0, len(words), 6):
+            chunk_words = words[i:i + 6]
+            chunk_dur = (len(chunk_words) / len(words)) * total_dur
+            sub_path = os.path.join(workdir, f"sub_{i}.png")
+            create_subtitle_file(" ".join(chunk_words), sub_path)
+            text_clips.append(
+                mpy.ImageClip(sub_path)
+                .set_duration(chunk_dur)
+                .set_start(current_time)
+                .set_position(("center", "center"))
+            )
+            current_time += chunk_dur
 
-        log("Compositing final video...")
-        final_video = mpy.CompositeVideoClip([bg_clip, char_clip, *text_clips])
-        final_video = final_video.set_audio(mpy.AudioFileClip(audio_path))
-
+        final_video = mpy.CompositeVideoClip([bg_clip, char_clip, *text_clips]).set_audio(
+            mpy.AudioFileClip(audio_path)
+        )
         final_video.write_videofile(
             final_video_path,
             fps=24,
             codec="libx264",
             audio_codec="aac",
+            ffmpeg_params=["-crf", "24", "-preset", "veryfast"],
             verbose=False,
-            logger=None,
+            logger=None
         )
 
         with open(final_video_path, "rb") as f:
@@ -229,9 +128,8 @@ def handler(event):
         return {"output": {"video_base64": encoded}}
 
     except Exception as e:
-        log("Error:", traceback.format_exc())
+        log("Handler execution error:", traceback.format_exc())
         return {"error": str(e), "trace": traceback.format_exc()}
-
 
 if __name__ == "__main__":
     runpod.serverless.start({"handler": handler})
