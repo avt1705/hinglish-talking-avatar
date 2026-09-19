@@ -10,7 +10,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libsm6 \
     libxext6 \
-    git \
     curl \
     ca-certificates \
     fonts-noto-core \
@@ -22,12 +21,12 @@ RUN curl -L -o /app/NotoSansDevanagari.ttf "https://github.com/google/fonts/raw/
 RUN python3 -m pip install --upgrade pip setuptools wheel
 
 COPY requirements.txt .
-
-# Install PyTorch with CUDA 12.1 support for GPU acceleration on RunPod
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu121
-
-# Install remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy your transparent custom character sprites
+COPY my_scene1.png /app/my_scene1.png
+COPY my_scene2.png /app/my_scene2.png
+COPY my_scene3.png /app/my_scene3.png
 
 COPY handler.py .
 
