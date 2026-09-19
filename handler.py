@@ -54,9 +54,10 @@ def get_speaking_intervals(audio_path: str):
     return [(start / 1000.0, end / 1000.0) for start, end in nonsilent_ranges], audio.duration_seconds
 
 # ==========================================
-# 2. SUBTITLE GENERATION
+# 2. SUBTITLE GENERATION (Safe Disk Method)
 # ==========================================
-def create_subtitle_frame(text: str, width=1280, height=720):
+def create_subtitle_file(text: str, filepath: str, width=1280, height=720):
+    """Draws text on a transparent canvas and saves to disk to guarantee perfect MoviePy Alpha handling."""
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     try:
@@ -82,7 +83,7 @@ def create_subtitle_frame(text: str, width=1280, height=720):
         align="center", 
         spacing=10
     )
-    return np.array(img)
+    img.save(filepath)
 
 # ==========================================
 # 3. RUNPOD HANDLER
@@ -105,24 +106,38 @@ def handler(event):
         generate_audio(script, audio_path, elevenlabs_key)
         speaking_intervals, total_duration = get_speaking_intervals(audio_path)
         
-        # Load the baked-in custom transparent sprites
-        idle_frame = np.array(Image.open("/app/my_scene1.png").convert("RGBA"))
-        talk1_frame = np.array(Image.open("/app/my_scene2.png").convert("RGBA"))
-        talk2_frame = np.array(Image.open("/app/my_scene3.png").convert("RGBA"))
+        # Load the baked-in custom transparent sprites via MoviePy ImageClip
+        idle_clip = mpy.ImageClip("/app/my_scene1.png")
+        talk1_clip = mpy.ImageClip("/app/my_scene2.png")
+        talk2_clip = mpy.ImageClip("/app/my_scene3.png")
         
-        def get_character_frame(t):
+        def get_mask_frame(clip):
+            if clip.mask is not None:
+                return clip.mask.get_frame(0)
+            return np.ones((clip.h, clip.w))
+
+        def make_frame(t):
             is_speaking = any(start <= t <= end for start, end in speaking_intervals)
             if is_speaking:
-                # Toggle mouth frames rapidly for a talking effect
-                return talk1_frame if int(t / 0.15) % 2 == 0 else talk2_frame
-            return idle_frame
+                active_clip = talk1_clip if int(t / 0.15) % 2 == 0 else talk2_clip
+                return active_clip.get_frame(0)
+            return idle_clip.get_frame(0)
 
+        def make_mask(t):
+            is_speaking = any(start <= t <= end for start, end in speaking_intervals)
+            if is_speaking:
+                active_clip = talk1_clip if int(t / 0.15) % 2 == 0 else talk2_clip
+                return get_mask_frame(active_clip)
+            return get_mask_frame(idle_clip)
+
+        # Apply the explicit mask to the explicit RGB clip to maintain transparency
+        char_clip = mpy.VideoClip(make_frame, duration=total_duration)
+        mask_clip = mpy.VideoClip(make_mask, duration=total_duration, is_mask=True)
+        char_clip = char_clip.set_mask(mask_clip)
+        
         # Position character in the center and scale properly
-        char_clip = mpy.VideoClip(get_character_frame, duration=total_duration)
-        w, h = char_clip.size
-        new_h = 600
-        char_clip = char_clip.resize(height=new_h)
-        char_clip = char_clip.set_position(('center', 720 - new_h))
+        char_clip = char_clip.resize(height=600)
+        char_clip = char_clip.set_position(('center', 720 - 600))
         
         # Background Layer
         bg_clip = mpy.ColorClip(size=(1280, 720), color=(18, 18, 24)).set_duration(total_duration)
@@ -139,8 +154,9 @@ def handler(event):
             duration = chunk.duration_seconds
             text = sentences[idx] if idx < len(sentences) else ""
             if text:
-                text_frame = create_subtitle_frame(text)
-                txt_clip = mpy.ImageClip(text_frame).set_duration(duration).set_start(current_time)
+                sub_path = os.path.join(workdir, f"sub_{idx}.png")
+                create_subtitle_file(text, sub_path)
+                txt_clip = mpy.ImageClip(sub_path).set_duration(duration).set_start(current_time)
                 text_clips.append(txt_clip)
             current_time += duration
 
