@@ -18,8 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Download Google's Noto Sans Devanagari font for Hindi rendering
 RUN curl -L -o /app/NotoSansDevanagari.ttf "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari-Bold.ttf"
 
-RUN python3 -m pip install --upgrade pip setuptools wheel
+# Upgrade pip and wheel ONLY. Do NOT upgrade setuptools here. 
+RUN python3 -m pip install --upgrade pip wheel
 
+# Install dependencies (this will install the safe, pinned version of setuptools)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
