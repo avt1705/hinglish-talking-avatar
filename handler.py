@@ -85,7 +85,15 @@ def handler(event):
             "--still",
             "--enhancer", "gfpgan"
         ]
-        subprocess.run(sadtalker_cmd, check=True)
+        
+        # Capture the raw terminal output to find the exact failure reason
+        try:
+            result = subprocess.run(sadtalker_cmd, check=True, capture_output=True, text=True)
+            print(result.stdout, flush=True)
+        except subprocess.CalledProcessError as e:
+            print(f"--- SADTALKER STDOUT ---\n{e.stdout}", flush=True)
+            print(f"--- SADTALKER STDERR ---\n{e.stderr}", flush=True)
+            return {"error": "SadTalker crashed.", "trace": e.stderr}
 
         # 4. Locate the AI-generated video
         generated_video_path = None
@@ -123,9 +131,6 @@ def handler(event):
 
         return {"output": {"video_base64": encoded_video}}
 
-    except subprocess.CalledProcessError as e:
-        print(f"SadTalker Subprocess Error: {e}", flush=True)
-        return {"error": "SadTalker animation failed.", "trace": traceback.format_exc()}
     except Exception as e:
         print(f"Execution Error Occurred: {e}", flush=True)
         return {"error": str(e), "trace": traceback.format_exc()}
