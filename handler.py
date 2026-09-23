@@ -12,7 +12,6 @@ from gtts import gTTS
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-
 def find_file(filename):
     """Searches multiple paths so assets are located regardless of mount location."""
     search_paths = [
@@ -24,7 +23,6 @@ def find_file(filename):
         if os.path.exists(path):
             return path
     return None
-
 
 def get_speaking_intervals(audio_path):
     """Detects speaking vs silence intervals in the audio using pydub."""
@@ -40,19 +38,25 @@ def get_speaking_intervals(audio_path):
     intervals = [(start / 1000.0, end / 1000.0) for start, end in nonsilent_ranges]
     return intervals, total_dur
 
-
 def create_subtitle_clip(text, duration, font_path):
-    """Renders wrapped Hindi Devanagari text on a semi-transparent slate banner."""
+    """Renders wrapped Hindi Devanagari text safely."""
     width, height = 1080, 180
     img = Image.new("RGBA", (width, height), (15, 23, 42, 220))
     draw = ImageDraw.Draw(img)
 
-    try:
-        font = ImageFont.truetype(font_path, 34) if font_path else ImageFont.load_default()
-    except Exception:
+    if font_path:
+        try:
+            font = ImageFont.truetype(font_path, 34)
+        except Exception as e:
+            print(f"Font Load Error: {e}", flush=True)
+            font = ImageFont.load_default()
+    else:
+        print("WARNING: NotoSansDevanagari.ttf not found!", flush=True)
         font = ImageFont.load_default()
 
+    # Wrap the text to fit the screen
     wrapped = "\n".join(textwrap.wrap(text, width=42))
+    
     bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=6)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
@@ -67,7 +71,6 @@ def create_subtitle_clip(text, duration, font_path):
     )
     return mpy.ImageClip(np.array(img)).set_duration(duration).set_position(("center", "bottom"))
 
-
 def handler(event):
     try:
         workdir = "/tmp/runpod_job"
@@ -78,15 +81,25 @@ def handler(event):
 
         input_data = event.get("input", {})
         audio_base64 = input_data.get("audio_base64", "")
-        script = input_data.get("script", "").strip()
+        
+        # Safely extract script and ensure it is treated as a standard Unicode string
+        raw_script = input_data.get("script", "")
+        if isinstance(raw_script, bytes):
+            raw_script = raw_script.decode("utf-8")
+        
+        script = raw_script.strip()
+        
+        # Replace traditional Hindi Danda with a period so gTTS understands the pause
+        tts_script = script.replace('।', '.')
 
-        # Step 1: Obtain Audio (via Base64 or gTTS synthesis)
+        # Step 1: Obtain Audio
         if audio_base64:
             with open(audio_path, "wb") as f:
                 f.write(base64.b64decode(audio_base64))
-        elif script:
-            print("Synthesizing Hindi TTS from script...", flush=True)
-            tts = gTTS(text=script, lang="hi", slow=False)
+        elif tts_script:
+            # IMPORTANT: Removed raw Hindi text from print statement to avoid UnicodeEncodeError in Docker logs
+            print("Synthesizing Hindi TTS for script...", flush=True)
+            tts = gTTS(text=tts_script, lang="hi", slow=False)
             tts.save(audio_path)
         else:
             default_voice = find_file("my_voice.wav")
@@ -115,7 +128,7 @@ def handler(event):
         def make_frame(t):
             is_speaking = any(start <= t <= end for start, end in speaking_intervals)
             if is_speaking:
-                frame_idx = int((t / 0.15) % len(talk_clips))
+                frame_idx = int((t / 0.4) % len(talk_clips))
                 return talk_clips[frame_idx].get_frame(0)
             return idle_clip.get_frame(0)
 
@@ -123,7 +136,7 @@ def handler(event):
 
         # Step 5: Optional Subtitle Overlay
         font_path = find_file("NotoSansDevanagari.ttf")
-        if script and font_path:
+        if script:
             sub_clip = create_subtitle_clip(script, total_dur, font_path)
             final_clip = mpy.CompositeVideoClip([avatar_clip, sub_clip])
         else:
@@ -146,9 +159,8 @@ def handler(event):
         return {"output": {"video_base64": encoded_video}}
 
     except Exception as e:
-        print("Execution Error:", traceback.format_exc(), flush=True)
+        print("Execution Error Occurred.", flush=True)
         return {"error": str(e), "trace": traceback.format_exc()}
-
 
 if __name__ == "__main__":
     print("Starting RunPod Serverless Handler...", flush=True)
