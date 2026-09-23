@@ -78,7 +78,7 @@ def handler(event):
         # 3. Execute SadTalker AI Animation
         print("Starting SadTalker facial animation...", flush=True)
         sadtalker_cmd = [
-            "python3", "/app/SadTalker/inference.py",
+            "python3", "inference.py",
             "--driven_audio", audio_path,
             "--source_image", SOURCE_IMAGE_PATH,
             "--result_dir", workdir,
@@ -86,9 +86,9 @@ def handler(event):
             "--enhancer", "gfpgan"
         ]
         
-        # Capture the raw terminal output to find the exact failure reason
+        # Execute inside the SadTalker directory so relative paths work
         try:
-            result = subprocess.run(sadtalker_cmd, check=True, capture_output=True, text=True)
+            result = subprocess.run(sadtalker_cmd, check=True, capture_output=True, text=True, cwd="/app/SadTalker")
             print(result.stdout, flush=True)
         except subprocess.CalledProcessError as e:
             print(f"--- SADTALKER STDOUT ---\n{e.stdout}", flush=True)
