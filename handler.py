@@ -1,5 +1,5 @@
 import os
-import re
+import urllib.request
 import base64
 import textwrap
 import traceback
@@ -19,9 +19,12 @@ def create_subtitle_clip(text, duration):
     img = Image.new("RGBA", (width, height), (15, 23, 42, 220))
     draw = ImageDraw.Draw(img)
 
-    # Strictly enforce the Hindi font. Do not use load_default() as it crashes on Devanagari.
-    if not os.path.exists(FONT_PATH):
-        raise FileNotFoundError(f"Critical Error: Hindi font not found at {FONT_PATH}")
+    # Self-healing font check: If missing or smaller than 20KB (corrupted/HTML page), download it directly.
+    if not os.path.exists(FONT_PATH) or os.path.getsize(FONT_PATH) < 20000:
+        print("Corrupt font detected. Downloading clean Hindi font...", flush=True)
+        # Using the direct raw CDN link for the font
+        font_url = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Bold.ttf"
+        urllib.request.urlretrieve(font_url, FONT_PATH)
         
     font = ImageFont.truetype(FONT_PATH, 34)
 
