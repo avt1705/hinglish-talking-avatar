@@ -10,28 +10,46 @@ import runpod
 import moviepy.editor as mpy
 from gtts import gTTS
 
-# Hardcoded absolute paths based on the Dockerfile layout
-FONT_PATH = "/app/NotoSansDevanagari.ttf"
 SOURCE_IMAGE_PATH = "/app/frame1.png"
+
+def get_hindi_font(size=34):
+    primary_path = "/app/NotoSansDevanagari.ttf"
+    fallback_path = "/tmp/runpod_job/Hind-Regular.ttf"
+    
+    # 1. Attempt to load the built-in Docker font
+    try:
+        return ImageFont.truetype(primary_path, size)
+    except OSError:
+        pass # The file exists but is corrupted HTML
+        
+    # 2. If it fails, download a clean font to the /tmp folder
+    if not os.path.exists(fallback_path):
+        print("Corrupt font detected. Downloading clean Hindi font to /tmp...", flush=True)
+        # Using a highly stable direct link from the main Google Fonts repo
+        url = "https://raw.githubusercontent.com/google/fonts/main/ofl/hind/Hind-Regular.ttf"
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response, open(fallback_path, 'wb') as out_file:
+                out_file.write(response.read())
+        except Exception as e:
+            print(f"Font download failed: {e}", flush=True)
+            
+    # 3. Return the newly downloaded font
+    try:
+        return ImageFont.truetype(fallback_path, size)
+    except OSError:
+        # Absolute fallback to prevent a total crash
+        return ImageFont.load_default()
 
 def create_subtitle_clip(text, duration):
     width, height = 1080, 180
     img = Image.new("RGBA", (width, height), (15, 23, 42, 220))
     draw = ImageDraw.Draw(img)
 
-    # Self-healing font check: If missing or smaller than 20KB (corrupted/HTML page), download it directly.
-    if not os.path.exists(FONT_PATH) or os.path.getsize(FONT_PATH) < 20000:
-        print("Corrupt font detected. Downloading clean Hindi font...", flush=True)
-        # Using the direct raw CDN link for the font
-        font_url = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Bold.ttf"
-        urllib.request.urlretrieve(font_url, FONT_PATH)
-        
-    font = ImageFont.truetype(FONT_PATH, 34)
+    font = get_hindi_font(34)
 
-    # Wrap the text to fit the screen
     wrapped = "\n".join(textwrap.wrap(text, width=42))
     
-    # Use textbbox instead of deprecated textsize
     bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=6)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
@@ -89,7 +107,6 @@ def handler(event):
             "--enhancer", "gfpgan"
         ]
         
-        # Execute inside the SadTalker directory so relative paths work
         try:
             result = subprocess.run(sadtalker_cmd, check=True, capture_output=True, text=True, cwd="/app/SadTalker")
             print(result.stdout, flush=True)
