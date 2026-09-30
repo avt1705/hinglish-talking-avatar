@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 import runpod
 import moviepy.editor as mpy
 
-# Pointing to your specific .png assets in GitHub
+# Pointing to your full-body .png assets in GitHub
 SCENE1_PATH = "/app/my_scene1.png" # Closed mouth (Silence)
 SCENE2_PATH = "/app/my_scene2.png" # Open mouth (Talking)
 
@@ -52,7 +52,8 @@ def create_right_side_subtitle(text, duration, start_time):
             .set_start(start_time)
             .set_position(("right", "center")))
 
-def handler(event):
+# Changed to async def to natively support edge-tts without crashing RunPod
+async def handler(event):
     try:
         workdir = "/tmp/runpod_job"
         os.makedirs(workdir, exist_ok=True)
@@ -74,7 +75,7 @@ def handler(event):
         subtitle_clips = []
         audio_clips = []
 
-        # 1. Process Text-to-Speech Line-by-Line (Forces the human-like voice and sync)
+        # 1. Process Text-to-Speech Line-by-Line
         sentences = [s.strip() for s in re.split(r'[।.\n]+', script) if s.strip()]
         current_time = 0.0
         
@@ -82,12 +83,9 @@ def handler(event):
         for i, sentence in enumerate(sentences):
             chunk_path = os.path.join(workdir, f"chunk_{i}.mp3")
             
-            async def generate_tts():
-                # Using the natural Azure male voice
-                communicate = edge_tts.Communicate(sentence, "hi-IN-MadhurNeural")
-                await communicate.save(chunk_path)
-            
-            asyncio.run(generate_tts())
+            # Using the natural Azure male voice natively in the async loop
+            communicate = edge_tts.Communicate(sentence, "hi-IN-MadhurNeural")
+            await communicate.save(chunk_path)
             
             audio_chunk = mpy.AudioFileClip(chunk_path)
             dur = audio_chunk.duration
