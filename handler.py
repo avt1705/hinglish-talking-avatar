@@ -1,56 +1,40 @@
 import os
+import re
 import urllib.request
 import base64
 import textwrap
 import traceback
-import subprocess
+import asyncio
+import edge_tts
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import runpod
 import moviepy.editor as mpy
-from gtts import gTTS
 
-SOURCE_IMAGE_PATH = "/app/frame1.png"
+# Pointing to your specific .png assets in GitHub
+SCENE1_PATH = "/app/my_scene1.png" # Closed mouth (Silence)
+SCENE2_PATH = "/app/my_scene2.png" # Open mouth (Talking)
 
-def get_hindi_font(size=34):
-    primary_path = "/app/NotoSansDevanagari.ttf"
-    fallback_path = "/tmp/runpod_job/Hind-Regular.ttf"
+def get_hindi_font(size=46):
+    font_path = "/tmp/runpod_job/NotoSansDevanagari-Regular.ttf"
     
-    # 1. Attempt to load the built-in Docker font
-    try:
-        return ImageFont.truetype(primary_path, size)
-    except OSError:
-        pass # The file exists but is corrupted HTML
-        
-    # 2. If it fails, download a clean font to the /tmp folder
-    if not os.path.exists(fallback_path):
-        print("Corrupt font detected. Downloading clean Hindi font to /tmp...", flush=True)
-        # Using a highly stable direct link from the main Google Fonts repo
-        url = "https://raw.githubusercontent.com/google/fonts/main/ofl/hind/Hind-Regular.ttf"
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response, open(fallback_path, 'wb') as out_file:
-                out_file.write(response.read())
-        except Exception as e:
-            print(f"Font download failed: {e}", flush=True)
+    # Self-healing logic: downloads the font if it's missing or corrupted
+    if not os.path.exists(font_path) or os.path.getsize(font_path) < 50000:
+        print("Downloading clean Hindi font...", flush=True)
+        url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Regular.ttf"
+        urllib.request.urlretrieve(url, font_path)
             
-    # 3. Return the newly downloaded font
-    try:
-        return ImageFont.truetype(fallback_path, size)
-    except OSError:
-        # Absolute fallback to prevent a total crash
-        return ImageFont.load_default()
+    return ImageFont.truetype(font_path, size)
 
-def create_subtitle_clip(text, duration):
-    width, height = 1080, 180
-    img = Image.new("RGBA", (width, height), (15, 23, 42, 220))
+def create_right_side_subtitle(text, duration, start_time):
+    width, height = 960, 1080
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    font = get_hindi_font(34)
-
-    wrapped = "\n".join(textwrap.wrap(text, width=42))
+    font = get_hindi_font(46)
+    wrapped = "\n".join(textwrap.wrap(text, width=35))
     
-    bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=6)
+    bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=15)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
@@ -60,83 +44,111 @@ def create_subtitle_clip(text, duration):
         font=font,
         fill=(255, 255, 255),
         align="center",
-        spacing=6
+        spacing=15
     )
-    return mpy.ImageClip(np.array(img)).set_duration(duration).set_position(("center", "bottom"))
+    
+    return (mpy.ImageClip(np.array(img))
+            .set_duration(duration)
+            .set_start(start_time)
+            .set_position(("right", "center")))
 
 def handler(event):
     try:
         workdir = "/tmp/runpod_job"
         os.makedirs(workdir, exist_ok=True)
 
-        audio_path = os.path.join(workdir, "speech.mp3")
+        audio_path = os.path.join(workdir, "speech.wav") 
         final_video_path = os.path.join(workdir, "final.mp4")
 
         input_data = event.get("input", {})
-        audio_base64 = input_data.get("audio_base64", "")
         
         raw_script = input_data.get("script", "")
         if isinstance(raw_script, bytes):
             raw_script = raw_script.decode("utf-8")
         
         script = raw_script.strip()
-        tts_script = script.replace('।', '.')
-
-        # 1. Obtain Audio
-        if audio_base64:
-            with open(audio_path, "wb") as f:
-                f.write(base64.b64decode(audio_base64))
-        elif tts_script:
-            tts = gTTS(text=tts_script, lang="hi", slow=False)
-            tts.save(audio_path)
-        else:
-            return {"error": "No script or audio provided."}
-
-        # 2. Verify Single Image Source
-        if not os.path.exists(SOURCE_IMAGE_PATH):
-            return {"error": f"Missing frame1.png. Checked {SOURCE_IMAGE_PATH}"}
-
-        # 3. Execute SadTalker AI Animation
-        print("Starting SadTalker facial animation...", flush=True)
-        sadtalker_cmd = [
-            "python3", "inference.py",
-            "--driven_audio", audio_path,
-            "--source_image", SOURCE_IMAGE_PATH,
-            "--result_dir", workdir,
-            "--still",
-            "--enhancer", "gfpgan"
-        ]
         
-        try:
-            result = subprocess.run(sadtalker_cmd, check=True, capture_output=True, text=True, cwd="/app/SadTalker")
-            print(result.stdout, flush=True)
-        except subprocess.CalledProcessError as e:
-            print(f"--- SADTALKER STDOUT ---\n{e.stdout}", flush=True)
-            print(f"--- SADTALKER STDERR ---\n{e.stderr}", flush=True)
-            return {"error": "SadTalker crashed.", "trace": e.stderr}
+        if not script:
+            return {"error": "No script provided. Please send text."}
 
-        # 4. Locate the AI-generated video
-        generated_video_path = None
-        for root, dirs, files in os.walk(workdir):
-            for file in files:
-                if file.endswith(".mp4") and file != "final.mp4":
-                    generated_video_path = os.path.join(root, file)
-                    break
-                    
-        if not generated_video_path:
-            return {"error": "SadTalker failed to output an MP4 file."}
+        subtitle_clips = []
+        audio_clips = []
 
-        # 5. Overlay Subtitles & Encode
-        print("Applying subtitles and encoding...", flush=True)
-        avatar_clip = mpy.VideoFileClip(generated_video_path).resize(width=1080)
-        total_dur = avatar_clip.duration
+        # 1. Process Text-to-Speech Line-by-Line (Forces the human-like voice and sync)
+        sentences = [s.strip() for s in re.split(r'[।.\n]+', script) if s.strip()]
+        current_time = 0.0
         
-        if script:
-            sub_clip = create_subtitle_clip(script, total_dur)
-            final_clip = mpy.CompositeVideoClip([avatar_clip, sub_clip])
-        else:
-            final_clip = avatar_clip
+        print("Generating human-like line-by-line audio...", flush=True)
+        for i, sentence in enumerate(sentences):
+            chunk_path = os.path.join(workdir, f"chunk_{i}.mp3")
+            
+            async def generate_tts():
+                # Using the natural Azure male voice
+                communicate = edge_tts.Communicate(sentence, "hi-IN-MadhurNeural")
+                await communicate.save(chunk_path)
+            
+            asyncio.run(generate_tts())
+            
+            audio_chunk = mpy.AudioFileClip(chunk_path)
+            dur = audio_chunk.duration
+            audio_clips.append(audio_chunk)
+            
+            subtitle_clips.append(create_right_side_subtitle(sentence, dur, current_time))
+            current_time += dur
+            
+        final_audio = mpy.concatenate_audioclips(audio_clips)
+        final_audio.write_audiofile(audio_path, logger=None) 
 
+        # 2. Verify Frame Assets
+        for path in [SCENE1_PATH, SCENE2_PATH]:
+            if not os.path.exists(path):
+                return {"error": f"Missing frame asset. Checked {path}"}
+
+        # 3. Audio Volume Analysis for 2-Frame Animation
+        print("Analyzing audio volume for 2-frame lip-sync...", flush=True)
+        audio_clip = mpy.AudioFileClip(audio_path)
+        total_dur = audio_clip.duration
+        audio_fps = audio_clip.fps 
+        
+        audio_array = audio_clip.to_soundarray()
+        
+        if audio_array.ndim == 2:
+            audio_array = np.max(np.abs(audio_array), axis=1) 
+        else:
+            audio_array = np.abs(audio_array)
+
+        f1 = mpy.ImageClip(SCENE1_PATH).resize(height=1080).get_frame(0)
+        f2 = mpy.ImageClip(SCENE2_PATH).resize(height=1080).get_frame(0)
+
+        samples_per_frame = int(audio_fps / 24)
+
+        def make_frame(t):
+            sample_idx = int(t * audio_fps)
+            
+            start_idx = max(0, sample_idx - (samples_per_frame // 2))
+            end_idx = min(len(audio_array), sample_idx + (samples_per_frame // 2))
+            
+            if start_idx >= end_idx:
+                return f1
+                
+            vol = np.max(audio_array[start_idx:end_idx])
+            
+            if vol < 0.04:  
+                return f1
+            else:             
+                return f2
+
+        avatar_clip = (mpy.VideoClip(make_frame, duration=total_dur)
+                       .set_position(("left", "center")))
+
+        # 4. Composite 1920x1080 Final Layout
+        print("Compositing 1920x1080 final layout...", flush=True)
+        bg_clip = mpy.ColorClip(size=(1920, 1080), color=(15, 23, 42), duration=total_dur)
+        
+        final_clip = mpy.CompositeVideoClip([bg_clip, avatar_clip, *subtitle_clips], size=(1920, 1080))
+        final_clip = final_clip.set_audio(audio_clip)
+
+        # 5. Render and Encode
         final_clip.write_videofile(
             final_video_path,
             fps=24,
@@ -156,5 +168,5 @@ def handler(event):
         return {"error": str(e), "trace": traceback.format_exc()}
 
 if __name__ == "__main__":
-    print("Starting AI Animation Worker...", flush=True)
+    print("Starting AI Video Worker...", flush=True)
     runpod.serverless.start({"handler": handler})
